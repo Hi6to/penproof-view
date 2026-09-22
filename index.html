@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PenProof 制作過程レポート</title>
+<script src="config.js"></script>
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --card: #ffffff;
+    --ink: #1f2320;
+    --sub: #6b7268;
+    --line: #e4e1da;
+    --accent: #2f6f4f;
+    --accent-bg: #eaf3ee;
+    --warn: #9a6b1f;
+    --warn-bg: #fbf1e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", -apple-system, BlinkMacSystemFont, sans-serif;
+    line-height: 1.65;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 20px 16px 60px; }
+  header.page { text-align: center; padding: 24px 0 8px; }
+  header.page .brand { font-size: 13px; letter-spacing: .08em; color: var(--sub); text-transform: uppercase; }
+  header.page h1 { font-size: 22px; margin: 6px 0 0; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 18px;
+    margin-top: 16px;
+  }
+  .facts { display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 14px; }
+  .facts dt { color: var(--sub); white-space: nowrap; }
+  .facts dd { margin: 0; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.ok { background: var(--accent-bg); color: var(--accent); }
+  .badge.warn { background: var(--warn-bg); color: var(--warn); }
+  .note {
+    font-size: 13px;
+    color: var(--sub);
+    background: #fafaf8;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 16px;
+  }
+  h2.section { font-size: 15px; margin: 28px 0 10px; color: var(--sub); font-weight: 600; }
+  .timeline { display: flex; flex-direction: column; gap: 10px; }
+  .entry {
+    display: flex;
+    gap: 12px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px;
+    align-items: center;
+  }
+  .entry .thumb {
+    width: 88px; height: 88px; flex: none;
+    border-radius: 8px;
+    background: #eee;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+    font-size: 22px;
+  }
+  .entry .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .entry .thumb.private { background: #f1efe9; color: #b9ab7f; }
+  .entry .meta { flex: 1; min-width: 0; }
+  .entry .meta .reason { font-size: 13.5px; font-weight: 600; }
+  .entry .meta .time { font-size: 12px; color: var(--sub); }
+  .entry .meta .hash { font-size: 11px; color: var(--sub); font-family: ui-monospace, Menlo, Consolas, monospace; word-break: break-all; margin-top: 2px; }
+  footer.page { text-align: center; font-size: 12px; color: var(--sub); margin-top: 40px; }
+  .msg { text-align: center; padding: 60px 16px; color: var(--sub); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page">
+    <div class="brand">PenProof</div>
+    <h1>制作過程レポート</h1>
+  </header>
+  <div id="app">
+    <div class="msg">読み込んでいます...</div>
+  </div>
+  <footer class="page">
+    このページは、記録された事実だけを表示しています。人が描いたか AI が描いたかの判定はしていません。<br>
+    内容は、記録した本人が選んだ範囲までです。判断は、ご自身でお願いします。
+  </footer>
+</div>
+<script>
+(function () {
+  var cfg = window.PENPROOF_CONFIG || {};
+  var app = document.getElementById("app");
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return "(不明)";
+    try {
+      var d = new Date(iso);
+      return d.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return iso; }
+  }
+
+  function fmtDuration(startIso, endIso) {
+    if (!startIso || !endIso) return "(不明)";
+    var ms = new Date(endIso) - new Date(startIso);
+    if (!(ms > 0)) return "(不明)";
+    var totalMin = Math.round(ms / 60000);
+    var h = Math.floor(totalMin / 60), m = totalMin % 60;
+    return h > 0 ? h + " 時間 " + m + " 分" : m + " 分";
+  }
+
+  var REASON_LABEL = {
+    start: "記録の開始",
+    end: "記録の終了",
+    interval: "経過(定期)",
+    no_pen_change: "変化(ペン入力なし)",
+    view_unknown: "大きな変化(原因不明)",
+  };
+
+  function showMessage(text) {
+    app.innerHTML = '<div class="msg">' + esc(text) + "</div>";
+  }
+
+  function render(work, chain, images) {
+    var imageByEntry = {};
+    (images || []).forEach(function (im) { imageByEntry[im.chain_entry_id] = im; });
+
+    var verified = work.target_verified === true;
+    var appName = work.target_app || "(不明)";
+
+    var html = "";
+    html += '<div class="card"><dl class="facts">';
+    html += "<dt>記録対象</dt><dd>" + esc(appName) + " "
+      + (verified
+        ? '<span class="badge ok">CLIP STUDIO PAINT を確認</span>'
+        : '<span class="badge warn">未確認</span>')
+      + "</dd>";
+    html += "<dt>開始</dt><dd>" + esc(fmtDate(work.started_at)) + "</dd>";
+    html += "<dt>終了</dt><dd>" + esc(fmtDate(work.ended_at)) + "</dd>";
+    html += "<dt>制作時間</dt><dd>" + esc(fmtDuration(work.started_at, work.ended_at)) + "</dd>";
+    html += "</dl></div>";
+
+    html += '<div class="note">'
+      + "「記録対象」は、PenProof が記録した画面が実際に CLIP STUDIO PAINT のものだったかどうかの確認結果です。"
+      + "「変化(ペン入力なし)」「大きな変化(原因不明)」は、ペンでの入力を伴わずに画面が変わった箇所です"
+      + "(画像の貼り付け・塗りつぶしなど、様々な理由がありえます)。これらは必ずこの記録に含まれます。"
+      + "</div>";
+
+    var entries = (chain || [])
+      .filter(function (c) { return c.reason !== "ticks_hash"; })
+      .sort(function (a, b) { return a.seq - b.seq; });
+
+    html += '<h2 class="section">記録された出来事(' + entries.length + " 件)</h2>";
+    html += '<div class="timeline">';
+    entries.forEach(function (c) {
+      var img = imageByEntry[c.id];
+      var label = REASON_LABEL[c.reason] || c.reason;
+      html += '<div class="entry">';
+      if (img) {
+        html += '<div class="thumb loading" data-storage-path="' + esc(img.storage_path) + '">…</div>';
+      } else {
+        html += '<div class="thumb private">🔒</div>';
+      }
+      html += '<div class="meta">';
+      html += '<div class="reason">' + esc(label) + "</div>";
+      html += '<div class="time">seq ' + esc(c.seq) + "</div>";
+      html += '<div class="hash">' + esc(c.image_hash) + "</div>";
+      html += "</div></div>";
+    });
+    html += "</div>";
+
+    app.innerHTML = html;
+    loadThumbnails();
+  }
+
+  // ストレージは非公開バケットなので、通常の <img src> では読めない(認証ヘッダーが要る)。
+  // ひとつずつ取ってきて、blob の URL に差し替える(公開状態でなくなった画像は、失敗してそのまま非表示扱いになる)。
+  function loadThumbnails() {
+    var nodes = document.querySelectorAll(".thumb.loading");
+    nodes.forEach(function (node) {
+      var path = node.getAttribute("data-storage-path");
+      fetch(cfg.SUPABASE_URL + "/storage/v1/object/published-images/" + path, {
+        headers: {
+          apikey: cfg.SUPABASE_ANON_KEY,
+          Authorization: "Bearer " + cfg.SUPABASE_ANON_KEY,
+        },
+      })
+        .then(function (r) { if (!r.ok) throw new Error("http " + r.status); return r.blob(); })
+        .then(function (blob) {
+          var img = document.createElement("img");
+          img.src = URL.createObjectURL(blob);
+          img.alt = "";
+          node.classList.remove("loading");
+          node.textContent = "";
+          node.appendChild(img);
+        })
+        .catch(function () {
+          node.classList.remove("loading");
+          node.classList.add("private");
+          node.textContent = "🔒";
+        });
+    });
+  }
+
+  var params = new URLSearchParams(location.search);
+  var id = params.get("id");
+
+  if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY || cfg.SUPABASE_URL.indexOf("xxxx") >= 0) {
+    showMessage("ページの設定がまだ済んでいません(config.js)。");
+    return;
+  }
+  if (!id) {
+    showMessage("作品の ID が指定されていません。QR コードか、正しい URL から開いてください。");
+    return;
+  }
+
+  fetch(cfg.SUPABASE_URL + "/rest/v1/rpc/get_public_work", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: cfg.SUPABASE_ANON_KEY,
+      Authorization: "Bearer " + cfg.SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify({ p_link_id: id }),
+  })
+    .then(function (r) {
+      if (!r.ok) throw new Error("http " + r.status);
+      return r.json();
+    })
+    .then(function (rows) {
+      if (!rows || rows.length === 0 || !rows[0].work) {
+        showMessage("この作品は見つかりませんでした(公開されていないか、ID が間違っている可能性があります)。");
+        return;
+      }
+      render(rows[0].work, rows[0].chain, rows[0].images);
+    })
+    .catch(function (e) {
+      showMessage("読み込みに失敗しました。時間をおいて、もう一度お試しください。");
+    });
+})();
+</script>
+</body>
+</html>
